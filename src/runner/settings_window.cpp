@@ -5,21 +5,25 @@
 #include <aclapi.h>
 
 #include "powertoy_module.h"
-#include <common/two_way_pipe_message_ipc.h>
+#include <common/interop/two_way_pipe_message_ipc.h>
 #include "tray_icon.h"
 #include "general_settings.h"
-#include "common/windows_colors.h"
-#include "common/common.h"
+#include <common/themes/windows_colors.h>
 #include "restart_elevated.h"
+#include "update_state.h"
 #include "update_utils.h"
 #include "centralized_kb_hook.h"
 
-#include <common/json.h>
-#include <common\settings_helpers.cpp>
-#include <common/os-detect.h>
-#include <common/version.h>
-#include <common/VersionHelper.h>
+#include <common/utils/json.h>
+#include <common/SettingsAPI/settings_helpers.cpp>
+#include <common/version/version.h>
+#include <common/version/helper.h>
 #include <common/logger/logger.h>
+#include <common/utils/elevation.h>
+#include <common/utils/os-detect.h>
+#include <common/utils/process_path.h>
+#include <common/utils/timeutil.h>
+#include <common/utils/winapi_error.h>
 
 #define BUFSIZE 1024
 
@@ -81,13 +85,30 @@ std::optional<std::wstring> dispatch_json_action_to_module(const json::JsonObjec
                 }
                 else if (action == L"check_for_updates")
                 {
-                    std::wstring latestVersion = check_for_updates();
-                    VersionHelper current_version(VERSION_MAJOR, VERSION_MINOR, VERSION_REVISION);
-                    bool isRunningLatest = latestVersion.compare(current_version.toWstring()) == 0;
+                    auto new_version_info = check_for_updates();
+                    const VersionHelper latestVersion =
+                        new_version_info ? new_version_info->version :
+                                           VersionHelper{ VERSION_MAJOR, VERSION_MINOR, VERSION_REVISION };
 
                     json::JsonObject json;
-                    json.SetNamedValue(L"version", json::JsonValue::CreateStringValue(latestVersion));
-                    json.SetNamedValue(L"isVersionLatest", json::JsonValue::CreateBooleanValue(isRunningLatest));
+                    json.SetNamedValue(L"version", json::JsonValue::CreateStringValue(latestVersion.toWstring()));
+                    json.SetNamedValue(L"isVersionLatest", json::JsonValue::CreateBooleanValue(!new_version_info));
+
+                    result.emplace(json.Stringify());
+                    UpdateState::store([](UpdateState& state) {
+                        state.github_update_last_checked_date.emplace(timeutil::now());
+                    });
+                }
+                else if (action == L"request_update_state_date")
+                {
+                    json::JsonObject json;
+
+                    auto update_state = UpdateState::read();
+                    if (update_state.github_update_last_checked_date)
+                    {
+                        const time_t date = *update_state.github_update_last_checked_date;
+                        json.SetNamedValue(L"updateStateDate", json::JsonValue::CreateStringValue(std::to_wstring(date)));
+                    }
 
                     result.emplace(json.Stringify());
                 }
